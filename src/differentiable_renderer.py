@@ -1,66 +1,79 @@
 import torch
+import torch.optim as optim
+import argparse
+import numpy as np
 
-def render_simulation_to_video(
-    simulation_output: torch.Tensor,
-    num_frames: int,
-    height: int,
-    width: int
-):
-    """
-    (Placeholder)
-    This function differentiably renders the MPM simulation output (particles
-    or mesh) into a video.
+from src.models.physical_parameters import ClothPhysicalParameters
+from src.mpm_simulation import run_differentiable_mpm_simulation
+
+# Import placeholder functions
+from src.smpl_processing import get_smpl_motion_from_image
+from src.gaussian_refinement import refine_smplx_with_3d_gaussians
+from src.differentiable_renderer import render_simulation_to_video
+
+def run_inference(weights_path, input_image, output_path, motion_prompt, num_frames=30, height=256, width=256):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    1.  Set up a differentiable renderer (e.g., nvdiffrast, PyTorch3D,
-        or a custom differentiable particle renderer).
-    2.  Place a camera in the scene.
-    3.  If the input is particles, it might render them as splats.
-    4.  If the input is a mesh (reconstructed from particles), it
-        uses a standard mesh rasterizer.
-    5.  The rendering MUST be differentiable w.r.t. the
-        `simulation_output` (particle/vertex positions).
+    # 1. Initialize Model and Load Weights
+    physical_params = ClothPhysicalParameters().to(device)
+    try:
+        state_dict = torch.load(weights_path, map_location=device)
+        physical_params.load_state_dict(state_dict)
+        physical_params.eval()
+        print(f"INFO: Loaded trained parameters from {weights_path}")
+    except FileNotFoundError:
+        print(f"WARNING: Weights file {weights_path} not found. Using default parameters.")
+    
+    # 2. Get SMPL motion
+    print(f"INFO: Generating SMPLX motion from {input_image} with prompt: '{motion_prompt}'")
+    raw_smpl_motion = get_smpl_motion_from_image(
+        input_image, 
+        motion_prompt
+    ).to(device)
+    
+    # 3. Refine SMPLX motion with 3D Gaussians (Collider Motion)
+    print("INFO: Refining motion with 3D Gaussians for stable collision.")
+    # The output of this function now represents the detailed collider geometry,
+    # which we want to render.
+    collider_motion = refine_smplx_with_3d_gaussians(raw_smpl_motion)
+    
+    # 4. Run Final Differentiable Simulation
+    print("INFO: Running final DMPM simulation with learned parameters.")
+    with torch.no_grad():
+        sim_output = run_differentiable_mpm_simulation(
+            collider_motion, 
+            physical_params
+        )
         
-    Args:
-        simulation_output (torch.Tensor): Particle or vertex positions.
-                                          Shape: (num_frames, num_points, 3)
-        num_frames (int): Number of frames to render.
-        height (int): Video height.
-        width (int): Video width.
-        
-    Returns:
-        torch.Tensor: The rendered video.
-                      Shape: (1, num_frames, 3, height, width)
-                      Values should be in [0, 1] range.
-    """
-    print("INFO: [Placeholder] Differentiably rendering simulation...")
+        # 5. Differentiable Rendering (including the collider motion/gaussians)
+        # --- UPDATED RENDER CALL ---
+        rendered_video = render_simulation_to_video(
+            sim_output, 
+            collider_motion, # Pass the collider motion/gaussians for rendering
+            num_frames, 
+            height, 
+            width
+        )
+        # --- END UPDATE ---
+
+    # 6. Save Output Video (Mock saving)
+    video_np = rendered_video[0].detach().cpu().permute(0, 2, 3, 1).numpy()
+    video_np = (video_np * 255.0).astype(np.uint8)
     
-    # Mock output: A (1, 30, 3, 256, 256) video tensor
-    # We must ensure gradients can flow back through this.
-    # We create a simple "rendering" by projecting the mean particle
-    # position onto the image plane.
+    print(f"INFO: Mock saving final rendered video to {output_path} (Frames: {video_np.shape[0]})")
+    # In a real application, you would use OpenCV or similar to save the video.
+    # Here, we just confirm the final shape.
     
-    # This mock creates a "blob" that moves based on the mean particle position
+    # Mock confirmation of render
+    print(f"SUCCESS: Inference finished. Rendered video shape: {video_np.shape}")
     
-    # Aggregate simulation output
-    mean_position = simulation_output.mean(dim=1) # (num_frames, 3)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run inference using trained cloth parameters.")
+    parser.add_argument("--weights", type=str, default="trained_cloth_params.pth", help="Path to the trained weights file.")
+    parser.add_argument("--image", type=str, default="data/input_person.jpg", help="Path to the input conditioning image.")
+    parser.add_argument("--output", type=str, default="output_simulation.mp4", help="Path to save the output video.")
+    parser.add_argument("--prompt", type=str, default="a person waving", help="Text prompt for the desired motion.")
+    args = parser.parse_args()
     
-    # Normalize to [0, 1] for image coordinates (mock)
-    # This is a bit complex, let's simplify.
-    # We just sum the input and project it to a scalar, then
-    # create a tensor from it. This ensures a gradient path.
-    
-    # A simple sum to maintain gradient
-    summed_input = simulation_output.sum()
-    
-    # Create a base video and add the "signal"
-    video = torch.rand(
-        1, num_frames, 3, height, width, 
-        device=simulation_output.device
-    )
-    
-    # Add a mock "signal" based on the input to ensure differentiability
-    # This is a hack to make sure `summed_input` is part of the graph.
-    video = video * 0.1 + (summed_input * 1e-9)
-    
-    # Clamp to [0, 1]
-    return torch.clamp(video, 0.0, 1.0)
+    run_inference(args.weights, args.image, args.output, args.prompt)
