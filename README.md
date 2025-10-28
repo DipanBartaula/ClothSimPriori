@@ -7,18 +7,30 @@ This is a compact, interpretable README with a small block diagram and the essen
 Simple ASCII block diagram showing data + gradient flow:
 
 ```
-	SMPL poses / motion
-			 |
-			 v
-	+-------------+    P2G    +-----------+   Surface   +-----------+
-	| Pose & Body | --> Grid  | Simulator | --> Extract  | Renderer  | --> Image
-	| preprocessing|          | (MPM)     |              | (diff)    |
-	+-------------+          +-----------+              +-----------+
-															 ^  |
-															 |  |  losses (image, feat, phys)
-															 |  v
-													trainable params
-												(mu, lambda, rest-shape, nets)
+    SMPL poses / motion    Precomputed 3D Gaussians
+	    |                       |
+	    v                       v
+    +-------------+           +-------------+
+    | Pose & Body |           | Gaussian    |
+    | preprocessing|          | assets (pre)
+    +-------------+           +-------------+
+	    |                       |
+	    v                       v
+	 (optional)            +-----------+   Surface   +-----------+
+	 refine /             | Simulator | --> Extract  | Renderer  | --> Image
+	 non-trainable        |  (MPM)    |              | (diff)    |
+	 assets               +-----------+              +-----------+
+		 \                 ^  |
+		  \_________________|  |  losses (image, feat, phys)
+				     |  v
+			      trainable params (optimized during training)
+			      (mu, lambda, rest-shape)
+
+Notes:
+- Gaussian assets are produced by a separate single-image->3D pipeline
+  (e.g., Gaussian Splatting / Prolific-Dreamer style refinement) before
+  training. They are loaded as fixed colliders during training and are
+  NOT optimized while tuning the physical parameters.
 ```
 
 Gradients: image loss -> renderer -> surface -> particles -> simulator -> trainable params
@@ -59,7 +71,11 @@ where X_T is final particle state after T timesteps and S is surface extraction.
 
 - Physical parameters: mu, lambda (stiffness), damping, friction (see `models/physical_parameters.py`).
 - Rest-shape offsets / per-particle priors.
-- Small neural modules / refiners (e.g. `gaussian_refinement.py`).
+- Note: Gaussian assets used to create collider geometry are assumed precomputed
+	by a separate pipeline and are treated as fixed during training. Any neural
+	modules used to create those assets (the single-image->3D refinement) are
+	trained/ran offline and are not part of the training optimizer in
+	`train.py`.
 
 ## Short file map
 
